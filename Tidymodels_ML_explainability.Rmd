@@ -49,12 +49,12 @@ disease <- data.frame(id=10001:20000)
 disease_df <- disease %>% 
   mutate(label = 1) %>% 
   mutate(var1 = rnorm(10000, mean =  0.0, sd=1)) %>% 
-  mutate(var2 = rnorm(10000, mean =  0.6, sd=1)) %>%
+  mutate(var2 = rnorm(10000, mean =  0.5, sd=1)) %>%
   mutate(var3 = rnorm(10000, mean =  0.7, sd=1)) %>%
   mutate(var4 = rnorm(10000, mean =  1.0, sd=1)) %>%
   mutate(var5 = rnorm(10000, mean =  0.0, sd=1)) %>%
-  mutate(var6 = rnorm(10000, mean =  0.6, sd=1)) %>%
-  mutate(var7 = rnorm(10000, mean =  0.7, sd=1)) %>%
+  mutate(var6 = rnorm(10000, mean = -0.5, sd=1)) %>%
+  mutate(var7 = rnorm(10000, mean = -0.7, sd=1)) %>%
   mutate(var8 = rnorm(10000, mean = -1.0, sd=1)) %>% 
   as.data.frame()
 
