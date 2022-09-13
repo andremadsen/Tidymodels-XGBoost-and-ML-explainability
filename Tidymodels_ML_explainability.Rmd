@@ -1,0 +1,336 @@
+## This notebook shows a general approach to generating a XGBoost binary classification machine learning (ML) model using the 'tidymodels' package. A simulated dataset is generated to reflect anthropometric/biomarker z-scores for healthy and sick individuals, representing the current classification dichotomy. The aim is to produce a viable classification model, basic model documentation and explain variable contribution in individual prediction scores by 'break-down' analyses.
+
+
+
+# Packages required for the current session
+```{r}
+## Press CTRL+SHIFT+ENTER to run each code block
+
+library(tidyverse)
+library(tidymodels)
+library(doParallel)
+library(foreach)
+library(dtplyr)
+library(modelsummary)
+library(vip)
+library(xgboost)
+library(tune)
+library(DALEX)
+library(DALEXtra)
+library(rprojroot)
+library(pROC)
+```
+
+
+# Generate dataset
+```{r}
+set.seed(100) # for reproducibility while drawing random samples below
+
+# Healthy dataframe (label=0) with 8 variables representing normal distribution z-scores centered at 0
+healthy <- data.frame(id=1:10000)  
+
+healthy_df <- healthy %>% 
+  mutate(label = 0) %>% 
+  mutate(var1 = rnorm(10000, mean=0, sd=1)) %>% 
+  mutate(var2 = rnorm(10000, mean=0, sd=1)) %>%
+  mutate(var3 = rnorm(10000, mean=0, sd=1)) %>%
+  mutate(var4 = rnorm(10000, mean=0, sd=1)) %>%
+  mutate(var5 = rnorm(10000, mean=0, sd=1)) %>%
+  mutate(var6 = rnorm(10000, mean=0, sd=1)) %>%
+  mutate(var7 = rnorm(10000, mean=0, sd=1)) %>%
+  mutate(var8 = rnorm(10000, mean=0, sd=1)) %>% 
+  as.data.frame()
+
+# Patient dataframe (label=1) with 8 variables representing normal distribution z-scores with shifted mean centers
+disease <- data.frame(id=10001:20000)  
+
+disease_df <- disease %>% 
+  mutate(label = 1) %>% 
+  mutate(var1 = rnorm(10000, mean =  0.0, sd=1)) %>% 
+  mutate(var2 = rnorm(10000, mean =  0.6, sd=1)) %>%
+  mutate(var3 = rnorm(10000, mean =  0.7, sd=1)) %>%
+  mutate(var4 = rnorm(10000, mean =  1.0, sd=1)) %>%
+  mutate(var5 = rnorm(10000, mean =  0.0, sd=1)) %>%
+  mutate(var6 = rnorm(10000, mean =  0.6, sd=1)) %>%
+  mutate(var7 = rnorm(10000, mean =  0.7, sd=1)) %>%
+  mutate(var8 = rnorm(10000, mean = -1.0, sd=1)) %>% 
+  as.data.frame()
+
+# Combine 'healthy' and 'patients' into one dataframe
+data <- healthy_df %>% bind_rows(disease_df) %>%         
+  mutate(label = factor(label, levels = c("0", "1")))
+
+# Visualize the different distributions exhibited by healthy vs patients for 'var2'
+data %>%
+  ggplot(aes(x = var2, fill = factor(label))) +
+  geom_density(alpha = 0.6) +
+  scale_x_continuous(limits=c(-3.9,3.9), breaks = seq(-3, 3, by = 1)) +
+  scale_fill_manual(values = c("navy", "white"),
+    name = "Disease"
+  ) + theme_bw() + theme(panel.grid.minor=element_blank()) + theme(text = element_text(size=18)) +
+  labs(x = "Biomarker or anthropometric Z-score", y = "Density") + 
+  geom_vline(xintercept = 0, linetype = "dashed", size=1)
+
+
+```
+# Isolated predictive value of the above variable 'var2' is no good (ROC AUC < 0.7) - let's try ML instead!
+```{r}
+dichotomy  <- data$label
+measure    <- data$var2     
+simple_roc <- pROC::roc(dichotomy, measure)
+auc(simple_roc)
+```
+
+
+
+#################
+# TIDYMODELS WORKFLOW
+#################
+
+
+# Split training/testing data for ML (maintaining the original prevalence of disease cases)
+```{r}
+set.seed(42)
+data_split <- data %>%
+  initial_split(prop = 0.75, strata = "label")
+
+
+train_data <- data_split %>%
+  training() # 75% of dataset rows for training the model
+
+test_data <- data_split %>%
+  testing()  # 25% of dataset rows for testing the model (unseen data)
+```
+
+
+# ML recipe and workflow
+```{r}
+
+# Feature variables
+feature_variables <- c("var1","var2","var3","var4","var5","var6","var7","var8")
+
+
+# Apply formula
+xgb_formula <- as.formula(paste("label ~",
+                                paste(c(feature_variables),
+                                collapse = " + ")))
+
+# Apply formula(s) in recipe
+xgb_rec <- recipe(
+  formula = xgb_formula,
+  data = train_data) %>% 
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors(), -all_nominal())
+
+
+# Apply model hyperparameter tuning specifications
+xgboost_spec <- boost_tree(
+    trees = tune(), min_n = tune(), tree_depth = tune(), learn_rate = tune(),
+    loss_reduction = tune(), sample_size = tune()
+  ) %>%
+  set_mode("classification") %>%
+  set_engine("xgboost")
+
+
+# Apply training dataset cross-validation
+set.seed(42)
+folds <- vfold_cv(train_data, strata = label)
+folds
+
+
+# Wrap the set of workflow components
+set <- workflow_set(
+   preproc = list(
+   "Feature_variables" = xgb_rec),
+   models = list(
+   XGBoost = xgboost_spec
+)
+)
+```
+
+
+# Enable hyperthreading
+```{r}
+cores=detectCores(logical = FALSE)
+cl <- makeCluster(cores[1])
+registerDoParallel(cl)
+```
+
+
+# ML training (grab a coffee)
+```{r}
+
+xgb_res <- set %>% 
+  workflow_map("tune_grid",
+  metrics = metric_set(roc_auc),
+    resamples = folds,
+    grid = 20,
+    verbose = TRUE,
+    control = control_grid(save_pred = TRUE)
+  )
+```
+
+
+# Close hyperthreading
+```{r}
+registerDoSEQ()
+stopCluster(cl)
+```
+
+
+# Best workflow
+```{r}
+
+best_wf <- xgb_res %>%
+  rank_results(select_best = TRUE) %>%
+  filter(rank == 1) %>%
+  pull(wflow_id)
+```
+
+
+# Best specification
+```{r}
+best_specification <- xgb_res %>%
+  extract_workflow_set_result(id = best_wf) %>%
+  select_best() %>%
+  select(-.config)
+```
+
+
+# Best model
+```{r}
+best_model <- xgb_res %>%
+  extract_workflow(best_wf) %>%
+  finalize_workflow(parameters = best_specification) %>%
+  last_fit(data_split)
+```
+
+
+# Classification performance by ROC AUC
+```{r}
+roc_test <- best_model %>%
+  collect_predictions() %>%
+  roc_auc(.pred_0, truth = "label") %>%
+  pull(.estimate)
+```
+
+
+# ROC curve plot (test)
+```{r}
+best_model %>%
+  collect_predictions() %>%
+  roc_curve(label, .pred_0) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_line(size = 1.5, color = "midnightblue") +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    size = 1.2) + theme(aspect.ratio = 1) +
+  geom_text(aes(x = 0.8, y = 0.2, label = paste("ROC AUC:", round(roc_test, 4))))
+
+ggsave("roc1.jpeg", width=10, height = 10, unit="cm", dpi=600)
+```
+
+
+# Score distribution plot
+```{r}
+best_model %>%
+  collect_predictions() %>%
+  ggplot(aes(x = .pred_1, fill = label)) +
+  geom_density(alpha = 0.2) +
+  scale_fill_brewer(
+    palette = "Set1",
+    name = "Healthy"
+  ) +
+  labs(x = "Predicted score", y = "Density")
+```
+
+
+# Variable feature importance (of the general ML model)
+```{r}
+best_model %>%
+  extract_fit_engine() %>%
+  vip::vip(num_features = 8) +
+  labs(x = "Variable name\n", y = "Importance")
+```
+
+
+# Finalize and save the final XGBoost model object
+```{r}
+final_xgb <- best_model %>%
+  extract_workflow()
+
+save(final_xgb,file = "final_xgb.RData")
+```
+
+
+# Load the ML object in other sessions to assign prediction scores to classify healthy/disease
+```{r}
+object    <- base::load("final_xgb.RData")
+final_xgb <- base::get(object)
+```
+
+
+# Generate predictions: using the ML model to score new observations (binary classification)
+```{r}
+scores <- predict(final_xgb, new_data = test_data, type = "prob") %>% pull(.pred_1)
+test_data$score <- scores
+```
+
+
+
+#################
+# ML EXPLAINABILITY: SHAPLEY VALUES
+#################
+
+
+# Make ML Explainer object using all available data
+```{r}
+explainer <- DALEXtra::explain_tidymodels(final_xgb,
+                                data  = data[, 3:10],
+                                y     = as.integer(data$label),
+                                label = "xgboost",
+                                type  = "classification",
+                                predict_function_target_column = NULL
+)
+```
+
+
+# Apply explainer object to calculate variables' contribution to ML prediction score ('break-down')
+```{r}
+# Selecting highest score individual in 'test_data'
+new_obs <- test_data %>% filter(score == max(score))
+
+# Score breakdown for this individual case
+breakdown_df <- DALEX::predict_parts(explainer = explainer, new_observation = new_obs, type = "break_down")
+plot(breakdown_df, max_vars=8, add_contributions = TRUE) 
+```
+
+
+# Prediction score breakdown: parallel processing to obtain score contribution 'break-down' data for multiple individuals 
+```{r}
+new_obs <- test_data %>% sample_n(100)
+
+cores=detectCores(logical = FALSE)
+cl <- makeCluster(cores[1])
+registerDoParallel(cl)
+
+
+  data_shap_values <- foreach(i = seq(nrow(new_obs)),
+                     .packages = c('DALEX', 'DALEXtra', 'tidymodels', 'dplyr'),
+                     .export = c('predict_parts'),
+                     .combine= rbind,
+                     .multicombine = TRUE,
+                     .inorder = FALSE,
+                     .verbose = FALSE) %dopar% {
+
+                      data.frame(cbind(DALEX::predict_parts(explainer,
+                      new_obs[3:10], type = "break_down"),
+                      new_obs[i,]$id,
+                      new_obs[i,]$label,
+                      new_obs[i,]$score))
+           }
+
+stopCluster(cl)
+```
+
