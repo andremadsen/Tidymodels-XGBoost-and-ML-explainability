@@ -206,7 +206,7 @@ best_model <- xgb_res %>%
 ```
 
 
-# Classification performance by ROC AUC
+# Classification performance by ROC AUC (model applied to unseen test_data)
 ```{r}
 roc_test <- best_model %>%
   collect_predictions() %>%
@@ -215,7 +215,7 @@ roc_test <- best_model %>%
 ```
 
 
-# ROC curve plot (test)
+# ROC curve plot (model applied to unseen test_data)
 ```{r}
 best_model %>%
   collect_predictions() %>%
