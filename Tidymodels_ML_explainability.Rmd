@@ -255,19 +255,12 @@ best_model %>%
 ```
 
 
-# Finalize and save the final XGBoost model object
+# Finalize and save the final XGBoost model object for later use
 ```{r}
 final_xgb <- best_model %>%
   extract_workflow()
 
 save(final_xgb,file = "final_xgb.RData")
-```
-
-
-# Load the ML object in other sessions to assign prediction scores to classify healthy/disease
-```{r}
-object    <- base::load("final_xgb.RData")
-final_xgb <- base::get(object)
 ```
 
 
